@@ -1391,7 +1391,7 @@ class DSAdmin(SimpleLDAPObject):
             'objectclass', "top", "nsds5replica", "extensibleobject")
         entry.setValues('cn', "replica")
         entry.setValues('nsds5replicaroot', nsuffix)
-        entry.setValues('nsds5replicaid', str(id))
+        entry.setValues('nsds5replicaid', str(rid))
         entry.setValues('nsds5replicatype', replicatype)
         if rtype != LEAF_TYPE:
             entry.setValues('nsds5flags', "1")
@@ -2337,10 +2337,27 @@ SchemaFile= %s
         return "/usr/sbin"
     getsbindir = staticmethod(getsbindir)
 
+    @staticmethod
     def createInstance(args):
-        """Create a new instance of directory server.  First, determine the hostname to use.  By
-        default, the server will be created on the localhost.  Also figure out if the given
-        hostname is the local host or not."""
+        """Create a new instance of directory server.  
+        
+            args = {
+                verbose - or 0
+                sroot - os.environ.get('SERVER_ROOT')
+                prefix - os.environ.get('PREFIX')                
+                new_style # replaced
+                no_admin
+                have_admin
+                newhost, newport,
+                newrootdn, newrootpw, newsuffix, 
+                
+                }
+            First, determine the hostname to use.  By default, the server 
+            will be created on the localhost.  
+            
+            Also figure out if the given
+            hostname is the local host or not.
+        """
         verbose = args.get('verbose', 0)
         isLocal = DSAdmin.getnewhost(args)
 
@@ -2362,6 +2379,11 @@ SchemaFile= %s
 
         if 'have_admin' not in args:
             args['have_admin'] = False
+
+        #
+        # set { admconf, cfghost, cfgport }
+        # 
+        #
 
         # get default values from adm.conf
         if args['new_style'] and args['have_admin']:
@@ -2402,6 +2424,12 @@ SchemaFile= %s
                 args['cfgdshost'] = args['newhost']
             if isLocal and 'cfgdsport' not in args:
                 args['cfgdsport'] = 55555
+                
+        #
+        # TODO replace with: 
+        #  * missing = set(param).difference(args)
+        #  * print "Missing required arguments: %s " % missing
+        #
         missing = False
         for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'):
             if param not in args:
@@ -2481,7 +2509,6 @@ SchemaFile= %s
             newconn.cfgdsuser = args['cfgdsuser']
             newconn.cfgdspwd = args['cfgdspwd']
         return newconn
-    createInstance = staticmethod(createInstance)
 
     @staticmethod
     def createAndSetupReplica(createArgs, repArgs):
@@ -2493,14 +2520,15 @@ SchemaFile= %s
             -the second is a dict suitable for replicaSetupAll 
                 see replicaSetupAll
         """        
+        # Connect to or create the first instance
         conn = DSAdmin.createInstance(createArgs)
         if not conn:
             print "Error: could not create server", createArgs
             return 0
 
+        # setup a replication agreement *to* destination
         conn.replicaSetupAll(repArgs)
         return conn
-    #createAndSetupReplica = staticmethod(createAndSetupReplica)
 
 
 def testit():
