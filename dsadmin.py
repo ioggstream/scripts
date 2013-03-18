@@ -1312,28 +1312,35 @@ class DSAdmin(SimpleLDAPObject):
         # enable the chain on update
         return self.enableChainOnUpdate(suffix, chainbe)
 
-    # arguments to set up a replica:
-    # suffix - dn of suffix
-    # binddn - the replication bind dn for this replica
-    # type - master, hub, leaf (see above for values) - if type is omitted, default is master
-    # legacy - true or false - for legacy consumer
-    # id - replica id
-    # if replica ID is not given, an internal sequence number will be assigned
-    # call like this:
-    # conn.setupReplica({
-    #        'suffix': "dc=example,dc=com",
-    #        'type'  : dsadmin.MASTER_TYPE,
-    #        'binddn': "cn=replication manager,cn=config"
-    #  })
-    # binddn can also be a list:
-    #    'binddn': [ "cn=repl1,cn=config", "cn=repl2,cn=config" ]
     def setupReplica(self, args):
+        """Setup a replica agreement using the following dict
+        
+            args = { 
+                suffix - dn of suffix
+                binddn - the replication bind dn for this replica
+                type - master, hub, leaf (see above for values) - if type is omitted, default is master
+                legacy - true or false - for legacy consumer
+                id - replica id or - if not given - an internal sequence number will be assigned
+             }
+             
+             Ex. conn.setupReplica({
+                    'suffix': "dc=example,dc=com",
+                    'type'  : dsadmin.MASTER_TYPE,
+                    'binddn': "cn=replication manager,cn=config"
+              })
+             binddn can also be a list:
+            'binddn': [ "cn=repl1,cn=config", "cn=repl2,cn=config" ]
+            
+            TODO: use the more descriptive naming stuff? suffix, rtype=MASTER_TYPE, legacy=False, id=None
+            
+            DONE: replaced id and type keywords with rid and rtype
+        """
         global REPLICAID  # declared here because we may assign to it
         suffix = args['suffix']
-        type = args.get('type', MASTER_TYPE)
+        rtype = args.get('type', MASTER_TYPE)
         legacy = args.get('legacy', False)
         binddn = args['binddn']
-        id = args.get('id', None)
+        rid = args.get('id', None)
         nsuffix = DSAdmin.normalizeDN(suffix)
         mtent = self.getMTEntry(suffix)
         if not mtent:
@@ -1349,7 +1356,7 @@ class DSAdmin(SimpleLDAPObject):
             if not nsuffix in self.suffixes:
                 self.suffixes[nsuffix] = {}
             self.suffixes[nsuffix]['dn'] = dn
-            self.suffixes[nsuffix]['type'] = type
+            self.suffixes[nsuffix]['type'] = rtype
             return 0
 
         binddnlist = []
@@ -1361,15 +1368,15 @@ class DSAdmin(SimpleLDAPObject):
         else:
             binddnlist.append(REPLBINDDN)
 
-        if not id and type == MASTER_TYPE:
-            id = REPLICAID
+        if not rid and rtype == MASTER_TYPE:
+            rid = REPLICAID
             REPLICAID += 1
-        elif not id:
-            id = 0
+        elif not rid:
+            rid = 0
         else:
-            REPLICAID = id  # use given id for internal counter
+            REPLICAID = rid  # use given id for internal counter
 
-        if type == MASTER_TYPE:
+        if rtype == MASTER_TYPE:
             replicatype = "3"
         else:
             replicatype = "2"
@@ -1386,7 +1393,7 @@ class DSAdmin(SimpleLDAPObject):
         entry.setValues('nsds5replicaroot', nsuffix)
         entry.setValues('nsds5replicaid', str(id))
         entry.setValues('nsds5replicatype', replicatype)
-        if type != LEAF_TYPE:
+        if rtype != LEAF_TYPE:
             entry.setValues('nsds5flags', "1")
         entry.setValues('nsds5replicabinddn', binddnlist)
         entry.setValues('nsds5replicalegacyconsumer', legacyval)
@@ -1404,7 +1411,7 @@ class DSAdmin(SimpleLDAPObject):
             return -1
         elif self.verbose:
             print entry
-        self.suffixes[nsuffix] = {'dn': dn, 'type': type}
+        self.suffixes[nsuffix] = {'dn': dn, 'type': rtype}
         return 0
 
     # dn can be an entry
@@ -1623,8 +1630,8 @@ class DSAdmin(SimpleLDAPObject):
         mod = [(ldap.MOD_ADD, 'nsds5BeginReplicaRefresh', 'start')]
         self.modify_s(agmtdn, mod)
 
-    # returns tuple - first element is done/not done, 2nd is no error/has error
     def checkReplInit(self, agmtdn):
+        """returns tuple - first element is done/not done, 2nd is no error/has error"""
         done = False
         hasError = 0
         attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
@@ -1684,7 +1691,8 @@ class DSAdmin(SimpleLDAPObject):
                 {
                 suffix - suffix to set up for replication
                 optional fields and their default values
-                bename - name of backend corresponding to suffix
+                bename - name of backend corresponding to suffix, otherwise
+                    it will use the *first* backend found (isn't that dangerous?)
                 parent - parent suffix if suffix is a sub-suffix - default is undef
                 ro - put database in read only mode - default is read write
                 type - replica type (MASTER_TYPE, HUB_TYPE, LEAF_TYPE) - default is master
@@ -1701,7 +1709,7 @@ class DSAdmin(SimpleLDAPObject):
         """
 
         repArgs.setdefault('type', MASTER_TYPE)
-        self.addSuffix(repArgs['suffix'])
+        self.addSuffix(repArgs['suffix']) #TODO should I check the addSuffix output?
         if 'bename' not in repArgs:
             beents = self.getBackendsForSuffix(repArgs['suffix'], ['cn'])
             # just use first one
@@ -1784,21 +1792,23 @@ class DSAdmin(SimpleLDAPObject):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
-    def setupSSL(self, secport=0, sourcedir=None, secargs={}):
+    def setupSSL(self, secport=0, sourcedir=None, secargs=None):
+        """Setup SSL eventually enabling selinux port 636 to 389ds.
+        
+            This requires server restart.
+        """
+        secargs = secargs or {}
         dn = 'cn=encryption,cn=config'
         mod = [(ldap.MOD_REPLACE, 'nsSSL3', secargs.get('nsSSL3', 'on')),
-               (ldap.MOD_REPLACE, 'nsSSLClientAuth',
-                secargs.get('nsSSLClientAuth', 'allowed')),
+               (ldap.MOD_REPLACE, 'nsSSLClientAuth', secargs.get('nsSSLClientAuth', 'allowed')),
                (ldap.MOD_REPLACE, 'nsSSL3Ciphers', secargs.get('nsSSL3Ciphers', '-rsa_null_md5,+rsa_rc4_128_md5,+rsa_rc4_40_md5,+rsa_rc2_40_md5,+rsa_des_sha,+rsa_fips_des_sha,+rsa_3des_sha,+rsa_fips_3des_sha,+fortezza,+fortezza_rc4_128_sha,+fortezza_null,+tls_rsa_export1024_with_rc4_56_sha,+tls_rsa_export1024_with_des_cbc_sha'))]
         self.modify_s(dn, mod)
 
         dn = 'cn=RSA,cn=encryption,cn=config'
         ent = Entry(dn)
         ent.setValues('objectclass', ['top', 'nsEncryptionModule'])
-        ent.setValues('nsSSLPersonalitySSL', secargs.get(
-            'nsSSLPersonalitySSL', 'Server-Cert'))
-        ent.setValues(
-            'nsSSLToken', secargs.get('nsSSLToken', 'internal (software)'))
+        ent.setValues('nsSSLPersonalitySSL', secargs.get('nsSSLPersonalitySSL', 'Server-Cert'))
+        ent.setValues('nsSSLToken', secargs.get('nsSSLToken', 'internal (software)'))
         ent.setValues('nsSSLActivation', secargs.get('nsSSLActivation', 'on'))
         try:
             self.add_s(ent)
@@ -1866,6 +1876,8 @@ class DSAdmin(SimpleLDAPObject):
 
     ###########################
     # Static methods start here
+    #
+    # TODO use @staticmethod annotation
     ###########################
     def normalizeDN(dn, usespace=False):
         # not great, but will do until we use a newer version of python-ldap
@@ -2471,8 +2483,11 @@ SchemaFile= %s
         return newconn
     createInstance = staticmethod(createInstance)
 
+    @staticmethod
     def createAndSetupReplica(createArgs, repArgs):
-        """pass this sub two dicts 
+        """Create an instance and use it as a 
+        
+            pass this sub two dicts 
             - the first one is a dict suitable to create new instance
                 see createInstance for more details
             -the second is a dict suitable for replicaSetupAll 
@@ -2485,7 +2500,7 @@ SchemaFile= %s
 
         conn.replicaSetupAll(repArgs)
         return conn
-    createAndSetupReplica = staticmethod(createAndSetupReplica)
+    #createAndSetupReplica = staticmethod(createAndSetupReplica)
 
 
 def testit():
