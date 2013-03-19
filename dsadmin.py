@@ -50,20 +50,11 @@ class Error(Exception):
 
 
 class InvalidArgumentError(Error):
-    def __init__(self, message):
-        self.message = message
-
-    def __repr__(self):
-        return message
+    pass
 
 
 class NoSuchEntryError(Error):
-    def __init__(self, message):
-        self.message = message
-
-    def __repr__(self):
-        return message
-
+    pass
 
 class Entry(object):
     """This class represents an LDAP Entry object.
@@ -473,6 +464,12 @@ class DSAdmin(SimpleLDAPObject):
         return None
 
     def __initPart2(self):
+        """Initialize the DSAdmin structure filling various fields, like:
+            - dbdir
+            - errlog
+            - confdir
+            
+        """
         if self.binddn and len(self.binddn) and not hasattr(self, 'sroot'):
             try:
                 ent = self.getEntry(
@@ -1206,6 +1203,7 @@ class DSAdmin(SimpleLDAPObject):
         return self.addSchema('objectClasses', args)
 
     def enableReplLogging(self):
+        """Enable logging of replication stuff (1<<13)"""
         return self.setLogLevel(8192)
 
     def disableReplLogging(self):
@@ -1258,9 +1256,12 @@ class DSAdmin(SimpleLDAPObject):
             suffix, isIntermediate, binddn, bindpw, to.toLDAPURL())
 
     def setupChangelog(self, dirpath=''):
-        """Setup the replication changelog"""
+        """Setup the replication changelog.
+            
+            TODO: why dirpath="" and not None?
+        """
         dn = "cn=changelog5,cn=config"
-        dirpath = dirpath or self.dbdir + "/cldb"
+        dirpath = dirpath or self.dbdir + "/changelogdb"
         entry = Entry(dn)
         entry.setValues('objectclass', "top", "extensibleobject")
         entry.setValues('cn', "changelog5")
@@ -1340,7 +1341,7 @@ class DSAdmin(SimpleLDAPObject):
         rtype = args.get('type', MASTER_TYPE)
         legacy = args.get('legacy', False)
         binddn = args['binddn']
-        rid = args.get('id', None)
+        rid = args.get('id')
         nsuffix = DSAdmin.normalizeDN(suffix)
         mtent = self.getMTEntry(suffix)
         if not mtent:
@@ -1414,8 +1415,15 @@ class DSAdmin(SimpleLDAPObject):
         self.suffixes[nsuffix] = {'dn': dn, 'type': rtype}
         return 0
 
-    # dn can be an entry
+
     def setupBindDN(self, dn, pwd):
+        """ Create a person entry with the given dn and pwd.
+            
+            dn can be an entry
+            
+            TODO: Could we return the newly created entry and raise
+                exception on fault?
+        """
         if dn and isinstance(dn, Entry):
             dn = dn.dn
         elif not dn:
@@ -1476,8 +1484,10 @@ class DSAdmin(SimpleLDAPObject):
     # args - DSAdmin consumer (repoth), suffix, binddn, bindpw, timeout
     # also need an auto_init argument
     def setupAgreement(self, repoth, args):
-        """Create a replication agreement from self to repoth - that is, self is the
-        supplier and repoth is the DSAdmin object for the consumer (the consumer
+        """Create a replication agreement from self to repoth - that is,
+        
+            * self is the supplier
+            * repoth is the DSAdmin object for the consumer (the consumer
         can be a master) """
         suffix = args['suffix']
         nsuffix = DSAdmin.normalizeDN(suffix)
@@ -1687,9 +1697,9 @@ class DSAdmin(SimpleLDAPObject):
 
     def replicaSetupAll(self, repArgs):
         """setup everything needed to enable replication for a given suffix
-            argument - a dict with the following fields:
+            repArgs is a dict with the following fields:
                 {
-                suffix - suffix to set up for replication
+                suffix - suffix to set up for replication (eventually create)
                 optional fields and their default values
                 bename - name of backend corresponding to suffix, otherwise
                     it will use the *first* backend found (isn't that dangerous?)
@@ -1697,8 +1707,10 @@ class DSAdmin(SimpleLDAPObject):
                 ro - put database in read only mode - default is read write
                 type - replica type (MASTER_TYPE, HUB_TYPE, LEAF_TYPE) - default is master
                 legacy - make this replica a legacy consumer - default is no
+                
                 binddn - bind DN of the replication manager user - default is REPLBINDDN
                 bindpw - bind password of the repl manager - default is REPLBINDPW
+                
                 log - if true, replication logging is turned on - default false
                 id - the replica ID - default is an auto incremented number
                 }
@@ -1709,20 +1721,29 @@ class DSAdmin(SimpleLDAPObject):
         """
 
         repArgs.setdefault('type', MASTER_TYPE)
-        self.addSuffix(repArgs['suffix']) #TODO should I check the addSuffix output?
+        
+        # eventually create the suffix (Eg. o=userRoot)
+        # TODO should I check the addSuffix output as it doesn't raise
+        self.addSuffix(repArgs['suffix']) 
         if 'bename' not in repArgs:
             beents = self.getBackendsForSuffix(repArgs['suffix'], ['cn'])
             # just use first one
             repArgs['bename'] = beents[0].cn
         if repArgs.get('log', False):
             self.enableReplLogging()
+            
+        # enable changelog for master replicas
         if repArgs['type'] != LEAF_TYPE:
             self.setupChangelog()
-        self.setupReplBindDN(repArgs.get('binddn'), repArgs.get('bindpw'))
+            
+        user = repArgs.get('binddn'), repArgs.get('bindpw')
+        # create the replication manager entry (required for master and slave)
+        self.setupReplBindDN(*user)
+        
         self.setupReplica(repArgs)
         if 'legacy' in repArgs:
-            self.setupLegacyConsumer(
-                repArgs.get('binddn'), repArgs.get('bindpw'))
+            self.setupLegacyConsumer(*user)
+
 
     def subtreePwdPolicy(self, basedn, pwdpolicy, verbose=False, **pwdargs):
         args = {'basedn': basedn, 'escdn': DSAdmin.escapeDNValue(
@@ -1840,7 +1861,7 @@ class DSAdmin(SimpleLDAPObject):
                 newmode = mode | 0600
                 os.chmod(destf, newmode)
             except:
-                pass  # oh well
+                pass  # oh well TODO notify at least!
             # copy2 will copy the mode too
             shutil.copy2(srcf, destf)
 
@@ -2430,13 +2451,10 @@ SchemaFile= %s
         #  * missing = set(param).difference(args)
         #  * print "Missing required arguments: %s " % missing
         #
-        missing = False
-        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'):
-            if param not in args:
-                print "missing required argument", param
-                missing = True
+        required_params = set(('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'))
+        missing = required_params.difference(args)
         if missing:
-            raise InvalidArgumentError("missing required arguments")
+            raise InvalidArgumentError("missing required arguments: %s" % missing)
 
         # try to connect with the given parameters
         try:
@@ -2512,7 +2530,8 @@ SchemaFile= %s
 
     @staticmethod
     def createAndSetupReplica(createArgs, repArgs):
-        """Create an instance and use it as a 
+        """return a newly created instance with replica configuration 
+            (but not the agreements).
         
             pass this sub two dicts 
             - the first one is a dict suitable to create new instance
