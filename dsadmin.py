@@ -1813,12 +1813,29 @@ class DSAdmin(SimpleLDAPObject):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
-    def setupSSL(self, secport=0, sourcedir=None, secargs=None):
+    def setupSSL(self, secport=0, sourcedir=None, secargs=None, skip_nssdir=False):
         """Setup SSL eventually enabling selinux port 636 to 389ds.
-        
+            
             This requires server restart.
+            
+            secport - the value to set nsslapd-secureport to
+            secargs - a dict with the following default values {
+                'nsSSLPersonalitySSL': 'Server-Cert',
+                'nsSSL3': 'on',
+                'nsSSLClientAuth': 'allowed'
+                ...
+            }
+            
+            TODO: consider to skip copying files if sourcedir is None 
+                instead of using skip_nssdir
+                
+            TODO: consider using 636 as secport
         """
+        assert secport, "Not a valid secport: %s " % secport
         secargs = secargs or {}
+        sourcedir = sourcedir or os.environ['SECDIR']
+        
+        # create the encryption tree
         dn = 'cn=encryption,cn=config'
         mod = [(ldap.MOD_REPLACE, 'nsSSL3', secargs.get('nsSSL3', 'on')),
                (ldap.MOD_REPLACE, 'nsSSLClientAuth', secargs.get('nsSSLClientAuth', 'allowed')),
@@ -1839,36 +1856,39 @@ class DSAdmin(SimpleLDAPObject):
         dn = 'cn=config'
         mod = [(
             ldap.MOD_REPLACE, 'nsslapd-security', secargs.get('nsslapd-security', 'on')),
-            (ldap.MOD_REPLACE, 'nsslapd-ssl-check-hostname',
-                secargs.get('nsslapd-ssl-check-hostname', 'off')),
+            (ldap.MOD_REPLACE, 'nsslapd-ssl-check-hostname', secargs.get('nsslapd-ssl-check-hostname', 'off')),
             (ldap.MOD_REPLACE, 'nsslapd-secureport', str(secport))]
         self.modify_s(dn, mod)
 
-        if not sourcedir:
-            sourcedir = os.environ['SECDIR']
+        
         # get our cert dir
         ent = self.getEntry(dn, ldap.SCOPE_BASE, '(objectclass=*)')
         certdir = ent.getValue('nsslapd-certdir')
         # have to stop the server before replacing any security files
         self.stop()
-        # copy security files from source dir to our cert dir
-        for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
-            srcf = sourcedir + '/' + ff
-            destf = certdir + '/' + ff
-            # make sure dest is writable so we can copy over it
-            try:
-                mode = os.stat(destf)[0]
-                newmode = mode | 0600
-                os.chmod(destf, newmode)
-            except:
-                pass  # oh well TODO notify at least!
-            # copy2 will copy the mode too
-            shutil.copy2(srcf, destf)
 
         # allow secport for selinux
         if secport != 636:
             cmd = 'semanage port -a -t ldap_port_t -p tcp ' + str(secport)
             os.system(cmd)
+
+        # copy security files from source dir to our cert dir
+        if not skip_nssdir:
+            for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
+                srcf = sourcedir + '/' + ff
+                destf = certdir + '/' + ff
+                # make sure dest is writable so we can copy over it
+                try:
+                    mode = os.stat(destf).st_mode
+                    newmode = mode | 0600
+                    os.chmod(destf, newmode)
+                except:
+                    # TODO notify at least!
+                    # TODO errno != ENOENT should raise?
+                    pass  # oh well 
+                # copy2 will copy the mode too
+                shutil.copy2(srcf, destf)
+
 
         # now, restart the ds
         self.start(True)
